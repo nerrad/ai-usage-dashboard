@@ -899,4 +899,9 @@ const html = generateHTML(records);
 writeFileSync(OUTPUT_PATH, html);
 const withCost = records.filter(r => r.cost_usd != null).length;
 console.log(`Dashboard written to ${OUTPUT_PATH} (${records.length} sessions, ${withCost} with cost data, ${pricedModels} models in pricing cache)`);
-execSync('open /tmp/ai-usage-dashboard.html');
+try {
+  execSync(`open ${OUTPUT_PATH}`);
+} catch (error) {
+  const message = error?.stderr?.toString().trim() || error.message;
+  console.warn(`Could not open ${OUTPUT_PATH}: ${message}`);
+}
