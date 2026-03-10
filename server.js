@@ -343,6 +343,16 @@ const DATA = ${dataJson};
 
 const CC_COLOR = '#00cc7a';
 const CODEX_COLOR = '#ccaa00';
+const PROJECT_COLORS = [
+  '#4cc9f0',
+  '#f72585',
+  '#4361ee',
+  '#f77f00',
+  '#90be6d',
+  '#e76f51',
+  '#b5179e',
+  '#577590',
+];
 
 // --- Helpers ---
 function fmt(n) {
@@ -373,6 +383,10 @@ function dateStr(d) {
 function shortDate(d) {
   if (!d) return '';
   return d.slice(5, 10); // MM-DD
+}
+
+function projectName(r) {
+  return r.project || '(No Project)';
 }
 
 const app = document.getElementById('app');
@@ -409,6 +423,8 @@ function renderDashboard() {
   html += '<div class="charts">';
   html += '<div class="chart-box"><h3>Sessions Over Time</h3><div class="chart-container"><canvas id="chart-sessions"></canvas></div></div>';
   html += '<div class="chart-box"><h3>Cost Over Time</h3><div class="chart-container"><canvas id="chart-cost"></canvas></div></div>';
+  html += '<div class="chart-box" style="grid-column: 1 / -1;"><h3>Project Cost Over Time</h3><div class="chart-container"><canvas id="chart-project-cost"></canvas></div></div>';
+  html += '<div class="chart-box" style="grid-column: 1 / -1;"><h3>Cumulative Cost by Project</h3><div class="chart-container"><canvas id="chart-project-cumulative"></canvas></div></div>';
   html += '<div class="chart-box"><h3>Token Breakdown by Source</h3><div class="chart-container"><canvas id="chart-tokens"></canvas></div></div>';
   html += '<div class="chart-box"><h3>Top Tools</h3><div class="chart-container"><canvas id="chart-tools"></canvas></div></div>';
   html += '<div class="chart-box" style="grid-column: 1 / -1;"><h3>Model Usage</h3><div class="chart-container"><canvas id="chart-models"></canvas></div></div>';
@@ -547,6 +563,7 @@ function renderCharts(data) {
 
   sessionsChart(data);
   costChart(data);
+  projectCostCharts(data);
   tokensChart(data);
   toolsChart(data);
   modelsChart(data);
@@ -610,6 +627,100 @@ function costChart(data) {
       scales: {
         x: { stacked: true },
         y: { stacked: true, beginAtZero: true, ticks: { callback: v => '$' + v } },
+      },
+      plugins: {
+        legend: { position: 'top', labels: { boxWidth: 12, font: { size: 11 } } },
+        tooltip: { callbacks: { label: ctx => ctx.dataset.label + ': $' + ctx.parsed.y.toFixed(2) } },
+      },
+    },
+  });
+}
+
+function projectCostCharts(data) {
+  const withCost = data.filter(r => r.cost_usd != null && r.cost_usd > 0 && dateStr(r.date_closed) !== '-');
+  if (withCost.length === 0) return;
+
+  const projectTotals = {};
+  for (const r of withCost) {
+    const project = projectName(r);
+    projectTotals[project] = (projectTotals[project] || 0) + r.cost_usd;
+  }
+
+  const rankedProjects = Object.entries(projectTotals)
+    .sort((a, b) => b[1] - a[1])
+    .map(([project]) => project);
+  const topProjects = rankedProjects.slice(0, 6);
+  const hasOther = rankedProjects.length > topProjects.length;
+
+  const byDate = {};
+  for (const r of withCost) {
+    const d = dateStr(r.date_closed);
+    const originalProject = projectName(r);
+    const project = topProjects.includes(originalProject) ? originalProject : 'Other';
+    if (!byDate[d]) byDate[d] = {};
+    byDate[d][project] = (byDate[d][project] || 0) + r.cost_usd;
+  }
+
+  const dates = Object.keys(byDate).sort();
+  const seriesProjects = hasOther ? [...topProjects, 'Other'] : topProjects;
+  const projectSeries = seriesProjects.map((project, idx) => ({
+    label: project,
+    color: project === 'Other' ? '#6c757d' : PROJECT_COLORS[idx % PROJECT_COLORS.length],
+    daily: dates.map(d => +((byDate[d][project] || 0).toFixed(2))),
+  }));
+
+  new Chart(document.getElementById('chart-project-cost'), {
+    type: 'bar',
+    data: {
+      labels: dates.map(shortDate),
+      datasets: projectSeries.map(series => ({
+        label: series.label,
+        data: series.daily,
+        backgroundColor: series.color,
+        borderRadius: 3,
+      })),
+    },
+    options: {
+      responsive: true,
+      maintainAspectRatio: false,
+      scales: {
+        x: { stacked: true },
+        y: { stacked: true, beginAtZero: true, ticks: { callback: v => '$' + v } },
+      },
+      plugins: {
+        legend: { position: 'top', labels: { boxWidth: 12, font: { size: 11 } } },
+        tooltip: { callbacks: { label: ctx => ctx.dataset.label + ': $' + ctx.parsed.y.toFixed(2) } },
+      },
+    },
+  });
+
+  new Chart(document.getElementById('chart-project-cumulative'), {
+    type: 'line',
+    data: {
+      labels: dates.map(shortDate),
+      datasets: projectSeries.map(series => {
+        let running = 0;
+        return {
+          label: series.label,
+          data: series.daily.map(value => {
+            running += value;
+            return +running.toFixed(2);
+          }),
+          borderColor: series.color,
+          backgroundColor: series.color + '22',
+          pointRadius: 2,
+          pointHoverRadius: 4,
+          tension: 0.25,
+          fill: false,
+        };
+      }),
+    },
+    options: {
+      responsive: true,
+      maintainAspectRatio: false,
+      interaction: { mode: 'index', intersect: false },
+      scales: {
+        y: { beginAtZero: true, ticks: { callback: v => '$' + v } },
       },
       plugins: {
         legend: { position: 'top', labels: { boxWidth: 12, font: { size: 11 } } },
@@ -788,4 +899,9 @@ const html = generateHTML(records);
 writeFileSync(OUTPUT_PATH, html);
 const withCost = records.filter(r => r.cost_usd != null).length;
 console.log(`Dashboard written to ${OUTPUT_PATH} (${records.length} sessions, ${withCost} with cost data, ${pricedModels} models in pricing cache)`);
-execSync('open /tmp/ai-usage-dashboard.html');
+try {
+  execSync(`open ${OUTPUT_PATH}`);
+} catch (error) {
+  const message = error?.stderr?.toString().trim() || error.message;
+  console.warn(`Could not open ${OUTPUT_PATH}: ${message}`);
+}
